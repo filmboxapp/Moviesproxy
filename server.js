@@ -11,7 +11,63 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('.'));
 
-async function extractStreamwishVideo(pageUrl) {
+// DOMINIOS PERMITIDOS - Todos los espejos de Streamwish y similares
+const ALLOWED_DOMAINS = [
+    // Streamwish principal y espejos
+    'streamwish.com',
+    'streamwish.to',
+    'streamwish.xyz',
+    'awish.pro',
+    'embedwish.com',
+    'hanerix.com',
+    'wishfast.com',
+    'wishcdn.com',
+    'wishfast.top',
+    'wishfast.xyz',
+    
+    // Vidhide (otro hosting similar)
+    'vidhide.com',
+    'vidhidepro.com',
+    'vidhideplus.com',
+    'vhcdn.com',
+    
+    // Filemoon
+    'filemoon.sx',
+    'filemoon.to',
+    'filemoon.in',
+    
+    // Streamtape
+    'streamtape.com',
+    'streamtape.to',
+    'streamtape.net',
+    
+    // Voe
+    'voe.sx',
+    'voe-unblock.com',
+    'voe-unblock.net',
+    
+    // Otros hosting de video similares
+    'hexload.com',
+    'userload.com',
+    'doodstream.com',
+    'dood.to',
+    'dood.ws',
+    'streamhub.to',
+    'streamvid.net',
+    'vadbam.net',
+    'vadbam.com',
+    'vadbam.to',
+    'mixdrop.co',
+    'mixdrop.to',
+    'mixdrop.ch',
+    'upstream.to',
+    'uptostream.com',
+    'mega.nz',
+    'vidoza.net',
+    'vidoza.com',
+];
+
+async function extractVideo(pageUrl) {
     try {
         const headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -20,9 +76,15 @@ async function extractStreamwishVideo(pageUrl) {
             'Referer': 'https://streamwish.com/'
         };
 
-        const response = await axios.get(pageUrl, { headers, timeout: 15000 });
+        const response = await axios.get(pageUrl, { 
+            headers, 
+            timeout: 15000,
+            maxRedirects: 5
+        });
+        
         const $ = cheerio.load(response.data);
         
+        // Buscar video en múltiples lugares
         let videoUrl = $('video source').attr('src');
         
         if (!videoUrl) {
@@ -30,26 +92,53 @@ async function extractStreamwishVideo(pageUrl) {
         }
         
         if (!videoUrl) {
+            videoUrl = $('video').attr('src');
+        }
+        
+        // Buscar en scripts
+        if (!videoUrl) {
             const scripts = $('script').map((i, el) => $(el).html()).get();
             for (const script of scripts) {
                 if (!script) continue;
-                const match = script.match(/sources:\s*\[\s*["']([^"']+)["']/i) ||
-                              script.match(/file:\s*["']([^"']+)["']/i) ||
-                              script.match(/src:\s*["']([^"']+\.(mp4|m3u8))["']/i);
-                if (match && match[1]) {
-                    videoUrl = match[1];
-                    break;
+                
+                // Patrones comunes de players de video
+                const patterns = [
+                    /sources:\s*\[\s*["']([^"']+)["']/i,
+                    /file:\s*["']([^"']+)["']/i,
+                    /src:\s*["']([^"']+\.(mp4|m3u8))["']/i,
+                    /videoUrl\s*=\s*["']([^"']+)["']/i,
+                    /url:\s*["']([^"']+\.(mp4|m3u8))["']/i,
+                    /["'](https?:\/\/[^"']+\.(mp4|m3u8|mkv|avi))["']/i
+                ];
+                
+                for (const pattern of patterns) {
+                    const match = script.match(pattern);
+                    if (match && match[1]) {
+                        videoUrl = match[1];
+                        break;
+                    }
                 }
+                if (videoUrl) break;
             }
         }
         
+        // Buscar m3u8 o mp4 directo en el HTML
         if (!videoUrl) {
-            const m3u8Match = response.data.match(/(https?:\/\/[^"'\s>]+\.m3u8[^"'\s<>]*)/i);
-            if (m3u8Match) videoUrl = m3u8Match[1];
+            const videoMatch = response.data.match(/(https?:\/\/[^"'\s<>]+\.(m3u8|mp4)[^"'\s<>]*)/i);
+            if (videoMatch) videoUrl = videoMatch[1];
         }
 
         if (!videoUrl) {
-            throw new Error('No se pudo extraer el video.');
+            throw new Error('No se pudo encontrar el video en la página');
+        }
+
+        // Limpiar la URL
+        videoUrl = videoUrl.trim();
+        
+        // Si es URL relativa, convertir a absoluta
+        if (videoUrl.startsWith('/')) {
+            const urlObj = new URL(pageUrl);
+            videoUrl = urlObj.origin + videoUrl;
         }
 
         const isHLS = videoUrl.includes('.m3u8');
@@ -57,14 +146,14 @@ async function extractStreamwishVideo(pageUrl) {
         return {
             url: videoUrl,
             type: isHLS ? 'hls' : 'mp4',
-            title: $('title').text().replace(/ - (Streamwish|Embedwish).*/i, '').trim() || 'Video'
+            title: $('title').text().replace(/ - (Streamwish|Embedwish|VidHide|Filemoon).*/i, '').trim() || 'Video'
         };
         
     } catch (error) {
         if (error.response) {
             throw new Error(`Error ${error.response.status}: No se pudo acceder al video`);
         }
-        throw new Error(error.message || 'Error desconocido');
+        throw new Error(error.message || 'Error al extraer el video');
     }
 }
 
@@ -76,30 +165,29 @@ app.post('/api/extract', async (req, res) => {
             return res.status(400).json({ success: false, error: 'URL requerida' });
         }
 
+        // Validar URL
+        let urlObj;
         try {
-            new URL(url);
+            urlObj = new URL(url);
         } catch {
             return res.status(400).json({ success: false, error: 'URL invalida' });
         }
 
-        const allowedDomains = [
-            'streamwish.com', 'streamwish.to', 'awish.pro', 
-            'embedwish.com', 'voe.sx', 'streamtape.com',
-            'streamtape.to', 'vadbam.net', 'vadbam.com'
-        ];
-        
-        const urlObj = new URL(url);
-        const isValid = allowedDomains.some(domain => urlObj.hostname.includes(domain));
+        // Validar dominio
+        const hostname = urlObj.hostname.toLowerCase();
+        const isValid = ALLOWED_DOMAINS.some(domain => hostname.includes(domain));
         
         if (!isValid) {
             return res.status(400).json({ 
                 success: false,
-                error: 'Dominio no soportado.' 
+                error: `Dominio "${hostname}" no soportado. Usa Streamwish o similares.`,
+                supported: ALLOWED_DOMAINS.slice(0, 10).join(', ') + '...'
             });
         }
 
-        const videoData = await extractStreamwishVideo(url);
+        const videoData = await extractVideo(url);
         
+        // Construir URL embed
         const protocol = req.headers['x-forwarded-proto'] || req.protocol;
         const host = req.headers['x-forwarded-host'] || req.get('host');
         const embedUrl = `${protocol}://${host}/embed?url=${encodeURIComponent(videoData.url)}&type=${videoData.type}&title=${encodeURIComponent(videoData.title)}`;
@@ -112,7 +200,10 @@ app.post('/api/extract', async (req, res) => {
         
     } catch (error) {
         console.error('Error:', error.message);
-        res.status(500).json({ success: false, error: error.message });
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
     }
 });
 
@@ -182,7 +273,11 @@ app.get('/embed', (req, res) => {
 });
 
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'OK', timestamp: new Date().toISOString() });
+    res.json({ 
+        status: 'OK', 
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
 });
 
 app.listen(PORT, () => {
