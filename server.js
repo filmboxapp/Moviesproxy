@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const axios = require('axios');
-const cheerio = require('cheerio');
+const puppeteer = require('puppeteer');
 require('dotenv').config();
 
 const app = express();
@@ -14,202 +13,134 @@ app.use(express.static('.'));
 const ALLOWED_DOMAINS = [
     'streamwish.com', 'streamwish.to', 'streamwish.xyz',
     'awish.pro', 'embedwish.com', 'hanerix.com',
-    'wishfast.com', 'wishcdn.com', 'wishfast.top',
-    'vidhide.com', 'vidhidepro.com', 'vidhideplus.com',
-    'filemoon.sx', 'filemoon.to', 'filemoon.in',
-    'streamtape.com', 'streamtape.to', 'streamtape.net',
-    'voe.sx', 'voe-unblock.com', 'voe-unblock.net',
+    'wishfast.com', 'wishcdn.com',
+    'vidhide.com', 'vidhidepro.com',
+    'filemoon.sx', 'filemoon.to',
+    'streamtape.com', 'streamtape.to',
+    'voe.sx', 'voe-unblock.com',
     'hexload.com', 'userload.com',
-    'doodstream.com', 'dood.to', 'dood.ws',
+    'doodstream.com', 'dood.to',
     'streamhub.to', 'streamvid.net',
-    'vadbam.net', 'vadbam.com', 'vadbam.to',
-    'mixdrop.co', 'mixdrop.to', 'mixdrop.ch',
-    'upstream.to', 'uptostream.com',
-    'vidoza.net', 'vidoza.com',
+    'vadbam.net', 'vadbam.com',
+    'mixdrop.co', 'mixdrop.to',
 ];
 
-async function extractVideo(pageUrl) {
-    try {
-        // Headers más completos para simular navegador real
-        const headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Referer': 'https://streamwish.com/',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Cache-Control': 'max-age=0'
-        };
+// Variable global para el navegador
+let browser = null;
 
-        console.log('Extrayendo:', pageUrl);
+// Iniciar navegador al arrancar
+async function initBrowser() {
+    try {
+        browser = await puppeteer.launch({
+            headless: 'new',
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--disable-gpu',
+                '--window-size=1920,1080'
+            ]
+        });
+        console.log('✅ Navegador iniciado');
+    } catch (error) {
+        console.error('❌ Error iniciando navegador:', error);
+    }
+}
+
+async function extractVideoWithPuppeteer(pageUrl) {
+    if (!browser) {
+        throw new Error('Navegador no disponible');
+    }
+
+    const page = await browser.newPage();
+    
+    try {
+        console.log('Navegando a:', pageUrl);
         
-        const response = await axios.get(pageUrl, { 
-            headers, 
-            timeout: 20000,
-            maxRedirects: 5,
-            validateStatus: (status) => status < 400
+        // Configurar viewport y user agent
+        await page.setViewport({ width: 1920, height: 1080 });
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+        
+        // Ir a la página y esperar que cargue
+        await page.goto(pageUrl, { 
+            waitUntil: 'networkidle2',
+            timeout: 30000 
         });
         
-        const html = response.data;
-        const $ = cheerio.load(html);
+        console.log('Página cargada, buscando video...');
         
-        console.log('HTML recibido, buscando video...');
+        // Esperar un poco para que cargue el player
+        await page.waitForTimeout(3000);
         
-        let videoUrl = null;
-        let method = '';
-
-        // MÉTODO 1: Video tags estándar
-        videoUrl = $('video source').attr('src');
-        if (videoUrl) method = 'video source';
-
-        // MÉTODO 2: Atributos data-src
-        if (!videoUrl) {
-            videoUrl = $('video').attr('data-src');
-            if (videoUrl) method = 'video data-src';
-        }
-
-        // MÉTODO 3: Cualquier atributo src en video
-        if (!videoUrl) {
-            videoUrl = $('video').attr('src');
-            if (videoUrl) method = 'video src';
-        }
-
-        // MÉTODO 4: Buscar en iframes (a veces el video está en un iframe)
-        if (!videoUrl) {
-            const iframeSrc = $('iframe').attr('src');
-            if (iframeSrc && (iframeSrc.includes('.mp4') || iframeSrc.includes('.m3u8') || iframeSrc.includes('player'))) {
-                videoUrl = iframeSrc;
-                method = 'iframe';
+        // Buscar URL del video en la página
+        const videoData = await page.evaluate(() => {
+            // Buscar en video tags
+            const video = document.querySelector('video');
+            if (video) {
+                const src = video.currentSrc || video.src || video.querySelector('source')?.src;
+                if (src) return { url: src, type: src.includes('.m3u8') ? 'hls' : 'mp4' };
             }
-        }
-
-        // MÉTODO 5: Buscar en scripts - múltiples patrones
-        if (!videoUrl) {
-            const scripts = $('script').map((i, el) => $(el).html()).get().filter(s => s);
             
-            const patterns = [
-                // Streamwish patterns
-                /sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+)["']/i,
-                /sources\s*:\s*\[\s*["']([^"']+)["']/i,
-                /file\s*:\s*["']([^"']+\.(mp4|m3u8))["']/i,
-                /src\s*:\s*["']([^"']+\.(mp4|m3u8))["']/i,
-                /videoUrl\s*=\s*["']([^"']+)["']/i,
-                /video_url\s*=\s*["']([^"']+)["']/i,
-                /url\s*:\s*["']([^"']+\.(mp4|m3u8))["']/i,
-                /["'](https?:\/\/[^"']+\.(mp4|m3u8|mkv|avi))["']/i,
-                /file["']?\s*:\s*["']([^"']+)["']/i,
-                /source["']?\s*:\s*["']([^"']+)["']/i,
-                /video["']?\s*:\s*["']([^"']+)["']/i,
-                // Base64 encoded URLs (común en algunos players)
-                /atob\(["']([A-Za-z0-9+/=]+)["']\)/i,
-            ];
+            // Buscar en sources de video
+            const source = document.querySelector('video source');
+            if (source && source.src) {
+                return { url: source.src, type: source.src.includes('.m3u8') ? 'hls' : 'mp4' };
+            }
             
+            // Buscar en iframes
+            const iframe = document.querySelector('iframe');
+            if (iframe && iframe.src && (iframe.src.includes('mp4') || iframe.src.includes('m3u8'))) {
+                return { url: iframe.src, type: 'mp4' };
+            }
+            
+            // Buscar en scripts
+            const scripts = Array.from(document.querySelectorAll('script'));
             for (const script of scripts) {
+                const text = script.textContent || '';
+                const patterns = [
+                    /sources:\s*\[\s*["']([^"']+)["']/,
+                    /file:\s*["']([^"']+\.(mp4|m3u8))["']/,
+                    /src:\s*["']([^"']+\.(mp4|m3u8))["']/,
+                    /["'](https?:\/\/[^"']+\.(mp4|m3u8))["']/
+                ];
+                
                 for (const pattern of patterns) {
-                    const match = script.match(pattern);
+                    const match = text.match(pattern);
                     if (match && match[1]) {
-                        let found = match[1];
-                        
-                        // Si es base64, decodificar
-                        if (pattern.toString().includes('atob')) {
-                            try {
-                                found = Buffer.from(found, 'base64').toString('utf-8');
-                            } catch (e) {
-                                continue;
-                            }
-                        }
-                        
-                        // Verificar que sea URL válida de video
-                        if (found.includes('.mp4') || found.includes('.m3u8') || found.includes('http')) {
-                            videoUrl = found;
-                            method = 'script pattern';
-                            break;
-                        }
+                        return { 
+                            url: match[1], 
+                            type: match[1].includes('.m3u8') ? 'hls' : 'mp4' 
+                        };
                     }
                 }
-                if (videoUrl) break;
             }
-        }
-
-        // MÉTODO 6: Buscar en el HTML crudo con regex
-        if (!videoUrl) {
-            const htmlPatterns = [
-                /(https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)/i,
-                /(https?:\/\/[^"'\s<>]+\.mp4[^"'\s<>]*)/i,
-                /["']([^"']*cdn[^"']*\.(mp4|m3u8))["']/i,
-                /["']([^"']*video[^"']*\.(mp4|m3u8))["']/i,
-            ];
             
-            for (const pattern of htmlPatterns) {
-                const match = html.match(pattern);
-                if (match && match[1]) {
-                    videoUrl = match[1];
-                    method = 'html regex';
-                    break;
-                }
-            }
-        }
-
-        // MÉTODO 7: Buscar en meta tags o links
-        if (!videoUrl) {
-            const ogVideo = $('meta[property="og:video"]').attr('content');
-            if (ogVideo) {
-                videoUrl = ogVideo;
-                method = 'og:video meta';
-            }
-        }
-
-        if (!videoUrl) {
-            console.log('No se encontró video en la página');
-            throw new Error('No se pudo encontrar el video. El sitio puede usar protección anti-scraping o el video requiere interacción del usuario.');
-        }
-
-        console.log('Video encontrado por método:', method);
-        console.log('URL del video:', videoUrl.substring(0, 100) + '...');
-
-        // Limpiar y procesar URL
-        videoUrl = videoUrl.trim().replace(/\\"/g, '').replace(/\\'/g, '');
+            return null;
+        });
         
-        // Si es URL relativa, convertir a absoluta
-        if (videoUrl.startsWith('//')) {
-            videoUrl = 'https:' + videoUrl;
-        } else if (videoUrl.startsWith('/')) {
-            const urlObj = new URL(pageUrl);
-            videoUrl = urlObj.origin + videoUrl;
+        if (!videoData || !videoData.url) {
+            throw new Error('No se encontró el video en la página');
         }
-
-        // Verificar que sea URL válida
-        try {
-            new URL(videoUrl);
-        } catch (e) {
-            throw new Error('URL de video inválida encontrada en la página');
-        }
-
-        const isHLS = videoUrl.includes('.m3u8');
         
-        // Extraer título
-        let title = $('title').text().trim();
-        title = title.replace(/ - (Streamwish|Embedwish|VidHide|Filemoon|Hanerix|Wishfast).*/i, '');
-        title = title.replace(/Watch\s*/i, '');
-        title = title || 'Video';
-
+        // Obtener título
+        const title = await page.evaluate(() => {
+            return document.title.replace(/ - (Streamwish|Embedwish|VidHide|Filemoon).*/i, '').trim() || 'Video';
+        });
+        
+        console.log('✅ Video encontrado:', videoData.url.substring(0, 50) + '...');
+        
         return {
-            url: videoUrl,
-            type: isHLS ? 'hls' : 'mp4',
-            title: title,
-            method: method // Para debugging
+            url: videoData.url,
+            type: videoData.type,
+            title: title
         };
         
     } catch (error) {
-        console.error('Error extrayendo:', error.message);
-        if (error.response) {
-            throw new Error(`Error ${error.response.status}: El sitio no responde o bloquea el acceso`);
-        }
+        console.error('Error en Puppeteer:', error);
         throw error;
+    } finally {
+        await page.close();
     }
 }
 
@@ -225,7 +156,7 @@ app.post('/api/extract', async (req, res) => {
         try {
             urlObj = new URL(url);
         } catch {
-            return res.status(400).json({ success: false, error: 'URL inválida' });
+            return res.status(400).json({ success: false, error: 'URL invalida' });
         }
 
         const hostname = urlObj.hostname.toLowerCase();
@@ -234,12 +165,12 @@ app.post('/api/extract', async (req, res) => {
         if (!isValid) {
             return res.status(400).json({ 
                 success: false,
-                error: `Dominio "${hostname}" no soportado`,
-                supported: ALLOWED_DOMAINS.slice(0, 8).join(', ') + '...'
+                error: `Dominio "${hostname}" no soportado`
             });
         }
 
-        const videoData = await extractVideo(url);
+        // Extraer con Puppeteer (tarda 5-10 segundos)
+        const videoData = await extractVideoWithPuppeteer(url);
         
         const protocol = req.headers['x-forwarded-proto'] || req.protocol;
         const host = req.headers['x-forwarded-host'] || req.get('host');
@@ -252,7 +183,7 @@ app.post('/api/extract', async (req, res) => {
         });
         
     } catch (error) {
-        console.error('Error en API:', error.message);
+        console.error('Error:', error.message);
         res.status(500).json({ 
             success: false, 
             error: error.message 
@@ -269,7 +200,7 @@ app.get('/embed', (req, res) => {
         }
 
         const decodedUrl = decodeURIComponent(url);
-        const safeUrl = decodedUrl.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        const safeUrl = decodedUrl.replace(/'/g, "\\'");
         const safeTitle = title.replace(/</g, '&lt;').replace(/>/g, '&gt;');
         
         const isHLS = type === 'hls';
@@ -285,7 +216,6 @@ app.get('/embed', (req, res) => {
         html, body { background: #000; width: 100%; height: 100%; overflow: hidden; }
         body { display: flex; justify-content: center; align-items: center; }
         video { width: 100%; height: 100%; max-height: 100vh; }
-        .error { color: white; text-align: center; padding: 20px; font-family: sans-serif; }
     </style>
 </head>
 <body>`;
@@ -298,35 +228,14 @@ app.get('/embed', (req, res) => {
         (function() {
             var video = document.getElementById('player');
             var videoSrc = '${safeUrl}';
-            
-            video.addEventListener('error', function(e) {
-                console.error('Video error:', e);
-            });
-            
             if (Hls.isSupported()) {
-                var hls = new Hls({
-                    enableWorker: true,
-                    lowLatencyMode: true
-                });
+                var hls = new Hls();
                 hls.loadSource(videoSrc);
                 hls.attachMedia(video);
-                hls.on(Hls.Events.MANIFEST_PARSED, function() {
-                    video.play().catch(function(e) {
-                        console.log('Autoplay blocked:', e);
-                    });
-                });
-                hls.on(Hls.Events.ERROR, function(event, data) {
-                    console.error('HLS error:', data);
-                });
+                hls.on(Hls.Events.MANIFEST_PARSED, function() { video.play(); });
             } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
                 video.src = videoSrc;
-                video.addEventListener('loadedmetadata', function() {
-                    video.play().catch(function(e) {
-                        console.log('Autoplay blocked:', e);
-                    });
-                });
-            } else {
-                document.body.innerHTML = '<div class="error">Tu navegador no soporta HLS</div>';
+                video.addEventListener('loadedmetadata', function() { video.play(); });
             }
         })();
     </script>`;
@@ -334,7 +243,6 @@ app.get('/embed', (req, res) => {
             html += `
     <video controls autoplay playsinline>
         <source src="${safeUrl}" type="video/mp4">
-        <div class="error">Tu navegador no soporta la reproducción de video</div>
     </video>`;
         }
         
@@ -343,17 +251,21 @@ app.get('/embed', (req, res) => {
         res.send(html);
         
     } catch (error) {
-        res.status(500).send('Error al generar el reproductor');
+        res.status(500).send('Error');
     }
 });
 
 app.get('/api/health', (req, res) => {
     res.json({ 
         status: 'OK', 
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        browser: browser ? 'ready' : 'not ready'
     });
 });
 
-app.listen(PORT, () => {
-    console.log(`Servidor corriendo en puerto ${PORT}`);
+// Iniciar navegador y servidor
+initBrowser().then(() => {
+    app.listen(PORT, () => {
+        console.log(`🚀 Servidor en puerto ${PORT}`);
+    });
 });
