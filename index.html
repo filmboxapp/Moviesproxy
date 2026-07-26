@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Streamwish Proxy - Sin Anuncios</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Streamwish Proxy</h1>
+            <p>Extrae videos limpios sin anuncios</p>
+        </header>
+
+        <main>
+            <div class="input-group">
+                <input type="url" id="videoUrl" placeholder="Pega aqui el link de Streamwish..." required>
+                <button onclick="extractVideo()" id="extractBtn">Extraer Video</button>
+            </div>
+
+            <div id="loading" class="loading hidden">
+                <div class="spinner"></div>
+                <p>Extrayendo video...</p>
+            </div>
+
+            <div id="result" class="result hidden">
+                <div class="video-info">
+                    <h3 id="videoTitle">Video</h3>
+                    <span id="videoType" class="badge">MP4</span>
+                </div>
+                
+                <div class="player-container">
+                    <iframe id="player" frameborder="0" allowfullscreen></iframe>
+                </div>
+
+                <div class="actions">
+                    <button onclick="copyEmbed()" class="btn-secondary">Copiar Link Embed</button>
+                    <button onclick="openDirect()" class="btn-secondary">Abrir Directo</button>
+                </div>
+            </div>
+
+            <div id="error" class="error hidden"></div>
+        </main>
+
+        <footer>
+            <p>Compatible con: Streamwish, Streamtape, Voe, y similares</p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
