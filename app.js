@@ -1,99 +1,76 @@
 let currentVideo = null;
 
 async function extractVideo() {
-    const urlInput = document.getElementById('videoUrl');
-    const url = urlInput.value.trim();
-    
-    if (!url) {
-        showError('Por favor ingresa un URL valido');
-        return;
-    }
-    
-    try {
-        new URL(url);
-    } catch {
-        showError('URL invalida. Debe empezar con http:// o https://');
-        return;
-    }
+    const input = document.getElementById('videoUrl');
+    const url = input.value.trim();
+    if (!url) return showError('Ingresa URL');
     
     setLoading(true);
     hideError();
     hideResult();
     
     try {
-        const response = await fetch('/api/extract', {
+        const res = await fetch('/api/extract', {
             method: 'POST',
-            headers: { 
-                'Content-Type': 'application/json'
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ url })
         });
         
-        const contentType = response.headers.get('content-type');
-        if (!contentType || !contentType.includes('application/json')) {
-            throw new Error('El servidor no respondio correctamente');
-        }
-        
-        const data = await response.json();
-        
-        if (!data.success) {
-            throw new Error(data.error || 'Error del servidor');
-        }
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
         
         currentVideo = data.data;
-        showResult(data);
+        console.log('Video:', currentVideo); // Para debug
         
-    } catch (error) {
-        console.error('Error:', error);
-        showError(error.message || 'Error de conexion');
+        // Mostrar tipo real
+        document.getElementById('videoType').textContent = currentVideo.type.toUpperCase();
+        document.getElementById('videoTitle').textContent = currentVideo.title;
+        document.getElementById('player').src = data.embedUrl;
+        
+        document.getElementById('result').classList.remove('hidden');
+        
+    } catch (e) {
+        showError(e.message);
     } finally {
         setLoading(false);
     }
 }
 
-function showResult(data) {
-    const resultDiv = document.getElementById('result');
-    const player = document.getElementById('player');
-    const titleEl = document.getElementById('videoTitle');
-    const typeEl = document.getElementById('videoType');
-    
-    titleEl.textContent = data.data.title || 'Video';
-    typeEl.textContent = data.data.type.toUpperCase();
-    player.src = data.embedUrl;
-    
-    resultDiv.classList.remove('hidden');
-    resultDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
-
 async function copyEmbed() {
     if (!currentVideo) return;
-    
-    const embedUrl = document.getElementById('player').src;
-    
+    const url = document.getElementById('player').src;
     try {
-        await navigator.clipboard.writeText(embedUrl);
+        await navigator.clipboard.writeText(url);
         const btn = event.target;
-        btn.textContent = 'Copiado!';
-        setTimeout(() => btn.textContent = 'Copiar Link Embed', 2000);
-    } catch (err) {
-        showError('No se pudo copiar');
+        const orig = btn.textContent;
+        btn.textContent = '✅ Copiado!';
+        setTimeout(() => btn.textContent = orig, 2000);
+    } catch (e) {
+        // Fallback
+        const ta = document.createElement('textarea');
+        ta.value = url;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        showError('Copiado (fallback)');
     }
 }
 
 function openDirect() {
-    if (!currentVideo || !currentVideo.url) return;
+    if (!currentVideo?.url) return;
     window.open(currentVideo.url, '_blank');
 }
 
-function setLoading(loading) {
-    document.getElementById('loading').classList.toggle('hidden', !loading);
-    document.getElementById('extractBtn').disabled = loading;
+function setLoading(v) {
+    document.getElementById('loading').classList.toggle('hidden', !v);
+    document.getElementById('extractBtn').disabled = v;
 }
 
-function showError(message) {
-    const errorDiv = document.getElementById('error');
-    errorDiv.textContent = message;
-    errorDiv.classList.remove('hidden');
+function showError(m) {
+    const e = document.getElementById('error');
+    e.textContent = m;
+    e.classList.remove('hidden');
 }
 
 function hideError() {
@@ -104,6 +81,6 @@ function hideResult() {
     document.getElementById('result').classList.add('hidden');
 }
 
-document.getElementById('videoUrl').addEventListener('keypress', (e) => {
+document.getElementById('videoUrl').addEventListener('keypress', e => {
     if (e.key === 'Enter') extractVideo();
 });
